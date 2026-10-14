@@ -1,0 +1,6 @@
+# original MongoDB mdiag.sh is not part of this project
+mdiag.sh
+report*.txt
+*.out
+*.err
+.DS_Store
