@@ -295,6 +295,9 @@ s_platform() {
 		fi
 		row "cgroup version" "$CGV"
 		row "memory limit configured" "$([ "$MEM_LIMITED" = y ] && echo yes || echo no)"
+		if [ "$MEM_LIMITED" != y ] && [ "$(tr -d '\0' < /proc/1/comm 2>/dev/null)" = systemd ]; then
+			chk "memory limit visibility" INFO "init system (systemd) is PID 1; a runtime limit may be set but not visible/enforced in this cgroup"
+		fi
 		row "CPU limit configured (quota)" "$([ "$CPU_LIMITED" = y ] && echo yes || echo no)"
 		if [ "$MEM_LIMITED" = y ]; then
 			row "memory limit" "$(membucket "$EFF_MEM_KB")"
