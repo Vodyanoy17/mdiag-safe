@@ -58,6 +58,11 @@ kubectl cp mdiag-safe.sh <pod>:/tmp/mdiag-safe.sh
 kubectl exec <pod> -- bash /tmp/mdiag-safe.sh > report.txt
 ```
 
+```
+docker cp mdiag-safe.sh oplog:/tmp/mdiag-safe.sh
+docker exec oplog bash /tmp/mdiag-safe.sh > report.txt
+```
+
 If `mongod` is not visible, the report says so and suggests where to run it.
 
 ## Example output
