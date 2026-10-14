@@ -60,6 +60,166 @@ kubectl exec <pod> -- bash /tmp/mdiag-safe.sh > report.txt
 
 If `mongod` is not visible, the report says so and suggests where to run it.
 
+## Example output
+
+Real output from a Docker container (memory limit and CPU quota set) running a
+stand-in `mongod` process. Everything you see is everything the report
+contains. There are no names, addresses, paths or absolute sizes.
+
+```text
+MongoDB host health report (anonymized, relative values only)
+tool: mdiag-safe 2.0.0   run id: 73eae479006e
+legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
+
+== Summary ==
+  checks                                   37 OK, 7 WARN, 1 INFO
+  anonymity audit                          clean (nothing had to be masked)
+  items needing attention:
+    - vm.swappiness : above recommended
+    - tcp_keepalive_time : above recommended
+    - THP enabled : mode: always
+    - disk1 read-ahead : far above recommended
+    - disk2 read-ahead : far above recommended
+    - [mongo1] TLS/SSL enabled : no
+    - [mongo1] data on dedicated volume : no - container writable layer
+
+== Platform ==
+  environment type                         container
+  underlying host virtualized              no / undetectable
+  cgroup version                           v2
+  memory limit configured                  yes
+  CPU limit configured (quota)             yes
+  memory limit / host RAM                  <10%
+  CPU limit / host cores                   <10%
+  distro family                            rhel (major 8)
+  kernel (major.minor)                     7.0
+  architecture class                       arm64
+  host time since boot                     1 day - 1 week
+
+== CPU features ==
+  AVX supported                            n/a (non-x86)
+  CPU frequency governor                   not exposed (VM/container/fixed freq)
+  SMT / hyperthreading                     n/a
+
+== CPU and memory (relative) ==
+  load average / cores (1m) (host-wide)    <10%
+  load average / cores (5m) (host-wide)    <10%
+  container CPU used / effective limit     [OK] <10%
+  CPU throttled periods                    [OK] <10%
+  CPU user (host-wide)                     <10%
+  CPU system/irq (host-wide)               <10%
+  CPU iowait (host-wide)                   <10%
+  CPU steal (host-wide)                    [OK] <10%
+  container working set / memory limit     [OK] <10%
+  container OOM kills                      [OK] none
+  host memory available (host-wide)        25-50%
+  host page cache / total (host-wide)      25-50%
+  host dirty pages / total (host-wide)     <10%
+  swap in use / total (host-wide)          [OK] <10%
+  NUMA (host-wide)                         single node / none
+
+== Pressure stalls (PSI, share of time stalled, 60s window) ==
+  container CPU some                       [OK] <10%
+  container memory some                    [OK] <10%
+  container memory full                    [OK] <10%
+  container I/O some                       [OK] <10%
+  container I/O full                       [OK] <10%
+  host-wide CPU some                       [OK] <10%
+  host-wide memory some                    [OK] <10%
+  host-wide memory full                    [OK] <10%
+  host-wide I/O some                       [OK] <10%
+  host-wide I/O full                       [OK] <10%
+
+== Memory activity during sample (host-wide) ==
+  swap in/out activity                     [OK] none
+  major page faults                        [OK] low
+  direct reclaim (allocation stalls)       [OK] none
+  free memory in large blocks              25-50%
+
+== Kernel settings vs. MongoDB production recommendations - host kernel ==
+  vm.swappiness                            [WARN] above recommended
+  vm.zone_reclaim_mode                     n/a
+  vm.overcommit_memory                     [OK] heuristic/always (not strict)
+  vm.max_map_count                         [OK] meets recommendation
+  tcp_keepalive_time                       [WARN] above recommended
+  THP enabled                              [WARN] mode: always
+  THP defrag                               madvise
+  clocksource                              [OK] fast (arch_sys_counter)
+  SELinux                                  not present / not visible
+
+== Capacity headroom (used / limit) ==
+  open files (system-wide)                 [OK] <10%
+  threads / min(threads-max,pid_max)       [OK] <10%
+  container PIDs limit                     none
+  TCP sockets / ephemeral port range       [OK] <10%
+  conntrack table used                     [OK] <10%
+  net.core.somaxconn                       [OK] meets recommendation
+  vm.dirty_background_ratio                [OK] at/below recommended
+  vm.dirty_ratio                           [OK] at/below recommended
+
+== Time synchronization ==
+  clock                                    inherited from host (not checkable from container)
+
+== Block devices (anonymized) - host-visible devices; may not map to the data volume ==
+  disk1 type                               rotational flag set
+  disk1 scheduler                          mq-deadline
+  disk1 read-ahead                         [WARN] far above recommended
+  disk1 busy (sample)                      [OK] <10%
+  disk2 type                               rotational flag set
+  disk2 scheduler                          mq-deadline
+  disk2 read-ahead                         [WARN] far above recommended
+  disk2 busy (sample)                      [OK] <10%
+
+== Filesystems visible to this environment (anonymized) ==
+  fs1 type                                 overlay
+  fs1 role                                 container writable layer
+  fs1 space used                           <10%
+  fs2 type                                 virtiofs
+  fs2 space used                           10-25%
+
+== Network posture (no addresses) ==
+  packet filtering                         not checkable from container (CNI / host / network policy)
+
+== MongoDB processes ==
+
+  [mongo1] role                            mongod
+  [mongo1] config file used                yes
+  [mongo1] version (major.minor)           n/a
+  [mongo1] process age                     <1 hour
+  [mongo1] CPU lifetime avg / eff. CPUs    <10%
+  [mongo1] RSS / effective memory          [OK] <10%
+  [mongo1] fd used / limit                 [OK] <10%
+  [mongo1] nofile limit                    [OK] meets recommendation
+  [mongo1] nproc limit                     [OK] meets recommendation
+  [mongo1] cgroup memory cap / host RAM    <10%
+  [mongo1] authorization enabled           [OK] yes
+  [mongo1] TLS/SSL enabled                 [WARN] no
+  [mongo1] replica set member              no
+  [mongo1] sharded cluster role            no
+  [mongo1] storage engine                  default
+  [mongo1] listen scope                    n/a
+  [mongo1] data fs type                    overlay
+  [mongo1] data on dedicated volume        [WARN] no - container writable layer
+  [mongo1] data fs space used              [OK] <10%
+  [mongo1] data fs inodes used             <10%
+  [mongo1] data fs noatime                 [INFO] no
+  [mongo1] data disk                       n/a (virtual/network filesystem)
+
+  mongod/mongos process count class        single
+
+== Kernel log events (counts reported as none/few/many) ==
+  dmesg                                    n/a (not permitted / not available in container)
+
+-- end of report --
+```
+
+Reading it: the summary lists the WARN items to look at first. Values in
+square brackets are checks against generic MongoDB recommendations; lines
+without a bracket are informational ratios. In this example the WARNs are host
+kernel tuning (swappiness, keepalive, THP), a large read-ahead on the host
+disks, TLS not configured, and the data directory sitting on the container's
+writable layer instead of a dedicated volume.
+
 ## What it reports
 
 | Section                | Contents |
