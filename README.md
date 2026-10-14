@@ -58,7 +58,7 @@ kubectl cp mdiag-safe.sh <pod>:/tmp/mdiag-safe.sh
 kubectl exec <pod> -- bash /tmp/mdiag-safe.sh > report.txt
 ```
 
-```
+```bash
 docker cp mdiag-safe.sh [container]:/tmp/mdiag-safe.sh
 docker exec [container] bash /tmp/mdiag-safe.sh > report.txt
 ```
@@ -94,8 +94,8 @@ legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
   cgroup version                           v2
   memory limit configured                  yes
   CPU limit configured (quota)             yes
-  memory limit / host RAM                  <10%
-  CPU limit / host cores                   <10%
+  memory limit                             <=0.5 GiB
+  CPU limit (quota)                        <=1 core
   distro family                            rhel (major 8)
   kernel (major.minor)                     7.0
   architecture class                       arm64

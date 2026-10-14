@@ -63,6 +63,34 @@ band() {
 	else echo ">100%"
 	fi
 }
+# CPU limit in cores x100 -> coarse whole-core bucket (upper bound inclusive)
+corebucket() {
+	local v="$1"
+	isnum "$v" || { echo "n/a"; return; }
+	if   [ "$v" -le 100 ];  then echo "<=1 core"
+	elif [ "$v" -le 200 ];  then echo "1-2 cores"
+	elif [ "$v" -le 400 ];  then echo "2-4 cores"
+	elif [ "$v" -le 800 ];  then echo "4-8 cores"
+	elif [ "$v" -le 1600 ]; then echo "8-16 cores"
+	else echo ">16 cores"
+	fi
+}
+# memory limit in KiB -> coarse GiB bucket (upper bound inclusive)
+membucket() {
+	local v="$1"
+	isnum "$v" || { echo "n/a"; return; }
+	local m=$(( v / 1024 ))   # MiB
+	if   [ "$m" -le 512 ];   then echo "<=0.5 GiB"
+	elif [ "$m" -le 1024 ];  then echo "0.5-1 GiB"
+	elif [ "$m" -le 2048 ];  then echo "1-2 GiB"
+	elif [ "$m" -le 4096 ];  then echo "2-4 GiB"
+	elif [ "$m" -le 8192 ];  then echo "4-8 GiB"
+	elif [ "$m" -le 16384 ]; then echo "8-16 GiB"
+	elif [ "$m" -le 32768 ]; then echo "16-32 GiB"
+	elif [ "$m" -le 65536 ]; then echo "32-64 GiB"
+	else echo ">64 GiB"
+	fi
+}
 # is a band "high" (>=75%)?
 band_high() { case "$1" in "75-90%"|"90-100%"|">100%") return 0;; esac; return 1; }
 
@@ -269,10 +297,10 @@ s_platform() {
 		row "memory limit configured" "$([ "$MEM_LIMITED" = y ] && echo yes || echo no)"
 		row "CPU limit configured (quota)" "$([ "$CPU_LIMITED" = y ] && echo yes || echo no)"
 		if [ "$MEM_LIMITED" = y ]; then
-			row "memory limit / host RAM" "$(band "$(pct "$EFF_MEM_KB" "$(awk '/^MemTotal:/{print $2}' /proc/meminfo)")")"
+			row "memory limit" "$(membucket "$EFF_MEM_KB")"
 		fi
 		if [ "$CPU_LIMITED" = y ]; then
-			row "CPU limit / host cores" "$(band "$(pct "$EFF_CPU_X100" $(( HOST_CORES * 100 )))")"
+			row "CPU limit (quota)" "$(corebucket "$EFF_CPU_X100")"
 		fi
 	fi
 	row "distro family" "${id:-unknown} (major ${ver:-?})"
@@ -844,7 +872,7 @@ $(grep -vE '^[[:space:]]*#' "$cfgp" 2>/dev/null)"
 			cap="$(cg_mem_limit)"
 			hostmem="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
 			if isnum "$cap" && [ $(( cap / 1024 )) -lt "$hostmem" ]; then
-				row "[mongo$n] cgroup memory cap / host RAM" "$(band "$(pct $(( cap / 1024 )) "$hostmem")")"
+				row "[mongo$n] cgroup memory cap" "$(membucket "$((cap / 1024))")"
 			else
 				row "[mongo$n] cgroup memory cap" "none"
 			fi
