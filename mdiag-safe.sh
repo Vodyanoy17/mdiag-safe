@@ -153,19 +153,24 @@ detect_env() {
 	isnum "$HOST_CORES" && [ "$HOST_CORES" -gt 0 ] || HOST_CORES="$(nproc 2>/dev/null || echo 1)"
 
 	EFF_MEM_KB="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
+	MEM_LIMITED=n; CPU_LIMITED=n
 	if [ "$IN_CONTAINER" = y ] && [ "$CGV" != none ]; then
 		cg_dirs self
 		local ml cl
-		ml="$(cg_mem_limit)"
-		if isnum "$ml" && [ $(( ml / 1024 )) -lt "$EFF_MEM_KB" ]; then
-			EFF_MEM_KB=$(( ml / 1024 )); MEM_LIMITED=y
+		if [ -n "$MEMDIR" ] && [ -d "$MEMDIR" ]; then
+			ml="$(cg_mem_limit)"
+			if isnum "$ml" && [ $(( ml / 1024 )) -lt "$EFF_MEM_KB" ]; then
+				EFF_MEM_KB=$(( ml / 1024 )); MEM_LIMITED=y
+			fi
 		fi
 		# honour cpuset (nproc) and quota, whichever is smaller
 		local aff; aff="$(nproc 2>/dev/null)"
 		isnum "$aff" && EFF_CPU_X100=$(( aff * 100 )) || EFF_CPU_X100=$(( HOST_CORES * 100 ))
-		cl="$(cg_cpu_limit_x100)"
-		if isnum "$cl" && [ "$cl" -lt "$EFF_CPU_X100" ]; then
-			EFF_CPU_X100="$cl"; CPU_LIMITED=y
+		if [ -n "$CPUDIR" ] && [ -d "$CPUDIR" ]; then
+			cl="$(cg_cpu_limit_x100)"
+			if isnum "$cl" && [ "$cl" -lt "$EFF_CPU_X100" ]; then
+				EFF_CPU_X100="$cl"; CPU_LIMITED=y
+			fi
 		fi
 	else
 		EFF_CPU_X100=$(( HOST_CORES * 100 ))
@@ -176,24 +181,36 @@ detect_env() {
 # cg_dirs <pid|self> sets MEMDIR MEMROOT CPUDIR CPUROOT
 
 cg_dirs() {
-	local pid="$1" p
+	local pid="$1" p cgroup_file
 	MEMDIR=""; CPUDIR=""; MEMROOT=""; CPUROOT=""
+	cgroup_file="/proc/$pid/cgroup"
 	case "$CGV" in
 	v2)
-		p="$(awk -F: '$1=="0"{print $3}' /proc/$pid/cgroup 2>/dev/null)"
-		p="${p%% *}"
+		p=""
+		while IFS=: read -r _controllers _subsys path; do
+			[ -n "$path" ] || continue
+			path="${path%% *}"
+			[ "$path" = "/" ] && path=""
+			p="$path"
+			break
+		done < "$cgroup_file" 2>/dev/null
 		MEMROOT=/sys/fs/cgroup; CPUROOT=/sys/fs/cgroup
-		MEMDIR="$MEMROOT$p"; [ -d "$MEMDIR" ] || MEMDIR="$MEMROOT"
+		MEMDIR="$MEMROOT${p:-/}"; [ -d "$MEMDIR" ] || MEMDIR="$MEMROOT"
 		CPUDIR="$MEMDIR"
 		;;
 	v1)
 		MEMROOT=/sys/fs/cgroup/memory
 		CPUROOT=/sys/fs/cgroup/cpu
 		[ -d /sys/fs/cgroup/cpu,cpuacct ] && CPUROOT=/sys/fs/cgroup/cpu,cpuacct
-		p="$(awk -F: '$2 ~ /(^|,)memory(,|$)/{print $3; exit}' /proc/$pid/cgroup 2>/dev/null)"
-		MEMDIR="$MEMROOT$p"; [ -d "$MEMDIR" ] || MEMDIR="$MEMROOT"
-		p="$(awk -F: '$2 ~ /(^|,)cpu(,|$)/{print $3; exit}' /proc/$pid/cgroup 2>/dev/null)"
-		CPUDIR="$CPUROOT$p"; [ -d "$CPUDIR" ] || CPUDIR="$CPUROOT"
+		p="$(awk -F: '$2 ~ /(^|,)memory(,|$)/{print $3; exit}' "$cgroup_file" 2>/dev/null)"
+		p="${p:-/}"
+		MEMDIR="$MEMROOT${p%/}"; [ -d "$MEMDIR" ] || MEMDIR="$MEMROOT"
+		p="$(awk -F: '$2 ~ /(^|,)cpu(,|$)/{print $3; exit}' "$cgroup_file" 2>/dev/null)"
+		p="${p:-/}"
+		CPUDIR="$CPUROOT${p%/}"; [ -d "$CPUDIR" ] || CPUDIR="$CPUROOT"
+		;;
+	*)
+		MEMDIR=""; CPUDIR=""
 		;;
 	esac
 }
@@ -241,10 +258,17 @@ cg_oom_kills() {
 
 cg_cpu_limit_x100() {
 	local d="$CPUDIR" min="" q p v
+	if [ -z "$d" ] || [ ! -d "$d" ]; then
+		echo ""
+		return
+	fi
 	while [ ${#d} -ge ${#CPUROOT} ]; do
 		v=""
 		if [ "$CGV" = v2 ]; then
 			read -r q p < <(rd "$d/cpu.max")
+			if [ "$q" = max ] || [ -z "$q" ] || [ -z "$p" ]; then
+				q=""; p=""
+			fi
 		else
 			q="$(rd "$d/cpu.cfs_quota_us")"; p="$(rd "$d/cpu.cfs_period_us")"
 		fi
@@ -760,11 +784,20 @@ have_proc() {   # is a process with this exact comm visible?
 }
 
 find_mongo_pids() {
-	local d c
+	local d c a
 	for d in /proc/[0-9]*; do
 		c="$(cat "$d/comm" 2>/dev/null)"
-		case "$c" in mongod|mongos) echo "${d#/proc/}";; esac
+		case "$c" in mongod|mongos) echo "${d#/proc/}"; continue;; esac
+		# comm may be renamed/truncated: accept an exact argv[0] basename only
+		a="$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | head -1)"
+		case "${a##*/}" in mongod|mongos) echo "${d#/proc/}";; esac
 	done
+}
+
+mongo_cmd_arg() {
+	local cmd="$1" arg="$2" v
+	v="$(printf '%s\n' "$cmd" | sed -nE "s/.*[[:space:]]${arg}[[:space:]]+([^[:space:]]+).*/\1/p; s/.*[[:space:]]${arg}=(.+)/\1/p; s/.*${arg}=([^[:space:]]+).*/\1/p" | head -1)"
+	printf '%s' "${v:-}"
 }
 
 cfg_has() { printf '%s' "$CFGTXT" | grep -Eiq "$1"; }
@@ -815,7 +848,8 @@ s_mongo() {
 		local role cmd cfgfile cfgp
 		role="$(cat /proc/$pid/comm 2>/dev/null)"
 		cmd="$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null)"
-		cfgfile="$(printf '%s' "$cmd" | sed -nE 's/^(.*[ ])?(-f|--config)[ =]([^ ]+).*/\3/p' | head -1)"
+		cfgfile="$(mongo_cmd_arg "$cmd" '--config')"
+		[ -z "$cfgfile" ] && cfgfile="$(mongo_cmd_arg "$cmd" '-f')"
 		CFGTXT="$cmd"
 		if [ -n "$cfgfile" ]; then
 			cfgp="$(ppath "$pid" "$cfgfile")"
@@ -903,7 +937,9 @@ $(grep -vE '^[[:space:]]*#' "$cfgp" 2>/dev/null)"
 
 		# data volume (path never printed); fs type/options from the process's own mountinfo
 		local dbp dbr
-		dbp="$(printf '%s\n' "$CFGTXT" | sed -nE 's/.*--dbpath[ =]"?([^" ]+).*/\1/p;s/^[[:space:]]*dbPath:[[:space:]]*"?([^" ]+).*/\1/p;s/^[[:space:]]*dbpath[[:space:]]*=[[:space:]]*([^ ]+).*/\1/p' | head -1)"
+		dbp="$(mongo_cmd_arg "$CFGTXT" '--dbpath')"
+		[ -z "$dbp" ] && dbp="$(printf '%s\n' "$CFGTXT" | sed -nE 's/.*--dbpath[ =]"?([^" ]+).*/\1/p;s/^[[:space:]]*dbPath:[[:space:]]*"?([^" ]+).*/\1/p;s/^[[:space:]]*dbpath[[:space:]]*=[[:space:]]*([^ ]+).*/\1/p' | head -1)"
+		[ -z "$dbp" ] && dbp="$(printf '%s\n' "$CFGTXT" | sed -nE 's/.*--dbpath=([[:space:]]*[^[:space:]]+).*/\1/p' | head -1)"
 		[ -z "$dbp" ] && dbp="/var/lib/mongodb"
 		dbr="$(ppath "$pid" "$dbp")"
 		if [ -d "$dbr" ]; then
