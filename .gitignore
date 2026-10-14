@@ -4,3 +4,4 @@ report*.txt
 *.out
 *.err
 .DS_Store
+session-*.md
