@@ -252,6 +252,7 @@ writable layer instead of a dedicated volume.
 | Time synchronization   | sync daemon type, synchronized yes/no |
 | Block devices and filesystems | type, scheduler, read-ahead, busy % and read/write latency (fast / normal / slow) per disk; container disk I/O limit yes/no; filesystem type and space used |
 | Network posture        | packet filtering present or not; interface error/drop ratio; TCP retransmit ratio; TIME_WAIT / CLOSE_WAIT socket counts (no addresses) |
+| Sizing vs. guidance    | per mongod: CPU generation (AVX/AVX2 on x86-64, ARMv8.2 on arm64), at least 2 cores and 4 GiB available (effective limit, not host), own persistent volume, shared data directory; yes/no only, with a note when requests or per-pod volumes cannot be seen from inside |
 | MongoDB processes      | role, version (major.minor), age, CPU and RSS against effective limits, fd and nofile/nproc limits, cgroup cap, NUMA interleave, auth / TLS / replica set / sharding flags (booleans only), listen scope (loopback / all interfaces / specific), data filesystem type, space, inodes, noatime, data volume vs container layer, data disk behind the data path |
 | Kernel log events      | OOM, I/O errors, machine checks, hung tasks, segfaults as none/few/many |
 

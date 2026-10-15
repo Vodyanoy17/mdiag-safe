@@ -354,6 +354,7 @@ s_platform() {
 # One before/after snapshot (CPU, cgroup, disk, vmstat) used by several sections.
 
 declare -A D0 D1 V0 V1 L0 L1
+declare -A MG_FS MG_DIR MG_ROLE MG_PID
 N0=""; N1=""
 S_CPU0=""; S_CPU1=""; S_CU0=""; S_CU1=""; S_TH0=""; S_TH1=""
 
@@ -909,6 +910,7 @@ $(grep -vE '^[[:space:]]*#' "$cfgp" 2>/dev/null)"
 
 		echo
 		row "[mongo$n] role" "$role"
+		MG_PID[$n]="$pid"; MG_ROLE[$n]="$role"
 		row "[mongo$n] config file used" "$([ -n "$cfgfile" ] && echo yes || echo no)"
 
 		local ver
@@ -999,6 +1001,7 @@ $(grep -vE '^[[:space:]]*#' "$cfgp" 2>/dev/null)"
 				  if (p==mp || index(p, mp=="/" ? "/" : mp "/")==1) if (length(mp)>=best) { best=length(mp); opts=$6; fs=f; dev=$3 } }
 				END{ print fs, opts, dev }' /proc/$pid/mountinfo 2>/dev/null)"
 			read -r fst mo dv <<< "$mi"
+			MG_FS[$n]="$fst"; MG_DIR[$n]="$dbr"
 			use="$(df -P "$dbr" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
 			iu="$(df -Pi "$dbr" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')"
 			row "[mongo$n] data fs type" "${fst:-n/a}"
@@ -1107,6 +1110,111 @@ s_network() {
 	fi
 }
 
+# ---------------------------------------------------------------- sizing requirements
+# Checks against MongoDB's published production guidance (pass/fail only):
+#   >= 2 real CPU cores and >= 4 GiB RAM per mongod (Kubernetes Operator
+#   replica-set guidance: requests of at least 2 CPU / 4 GiB, limits >= requests),
+#   a supported CPU architecture (x86-64 with AVX, 5.0+), own persistent volume.
+RQ_FAIL=0
+rq() { # name status text
+	chk "$1" "$2" "$3"; [ "$2" = WARN ] && RQ_FAIL=$((RQ_FAIL+1)); return 0
+}
+
+s_requirements() {
+	hdr "Sizing vs. MongoDB production guidance (per mongod)"
+	local pid role
+	local hostmem; hostmem="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"
+
+	# architecture and CPU generation (environment-wide)
+	case "$(uname -m)" in
+		x86_64|amd64)
+			if grep -m1 '^flags' /proc/cpuinfo 2>/dev/null | grep -qw avx; then
+				if grep -m1 '^flags' /proc/cpuinfo | grep -qw avx2; then
+					rq "CPU generation (AVX required, 5.0+)" OK "AVX/AVX2 present (Haswell-class or newer)"
+				else
+					rq "CPU generation (AVX required, 5.0+)" WARN "AVX present but not AVX2 (older than Haswell-class)"
+				fi
+			else
+				rq "CPU generation (AVX required, 5.0+)" WARN "AVX missing or masked by hypervisor"
+			fi;;
+		aarch64|arm64)
+			if grep -m1 -i '^features' /proc/cpuinfo 2>/dev/null | grep -qwE 'atomics|fphp|asimdhp'; then
+				rq "CPU generation (ARMv8.2-A+ for 5.0+)" OK "ARMv8.2-class features present"
+			else
+				rq "CPU generation (ARMv8.2-A+ for 5.0+)" WARN "ARMv8.2-A features not detected"
+			fi;;
+		*) chk "CPU architecture" INFO "not x86-64/arm64: check the MongoDB platform support matrix";;
+	esac
+
+	if [ -z "${MG_PID[1]}" ]; then
+		row "mongod visible" "no - per-process sizing not evaluated"
+		if [ "$IN_CONTAINER" = y ]; then
+			row "environment-wide view" "evaluating this container's limits only"
+			local ecpu=$EFF_CPU_X100 emem=$EFF_MEM_KB
+			[ "$ecpu" -ge 200 ] && rq "CPU available >= 2 cores" OK yes || rq "CPU available >= 2 cores" WARN "no"
+			[ "$emem" -ge 4194304 ] && rq "memory available >= 4 GiB" OK yes || rq "memory available >= 4 GiB" WARN "no"
+		fi
+		return
+	fi
+
+	local k
+	for k in $(printf '%s\n' "${!MG_PID[@]}" | sort -n); do
+		pid="${MG_PID[$k]}"; role="${MG_ROLE[$k]}"
+		case "$role" in mongod|mongos) ;; *) role=mongod;; esac
+		local ecpu emem lim
+		ecpu="$(nproc 2>/dev/null)"; isnum "$ecpu" && ecpu=$(( ecpu * 100 )) || ecpu=$(( HOST_CORES * 100 ))
+		emem="$hostmem"
+		if [ "$IN_CONTAINER" = y ] && [ "$CGV" != none ]; then
+			cg_dirs "$pid"
+			if [ -n "$CPUDIR" ] && [ -d "$CPUDIR" ]; then
+				lim="$(cg_cpu_limit_x100)"
+				isnum "$lim" && [ "$lim" -lt "$ecpu" ] && ecpu="$lim"
+			fi
+			if [ -n "$MEMDIR" ] && [ -d "$MEMDIR" ]; then
+				lim="$(cg_mem_limit)"
+				isnum "$lim" && [ $(( lim / 1024 )) -lt "$emem" ] && emem=$(( lim / 1024 ))
+			fi
+		fi
+
+		if [ "$ecpu" -ge 200 ]; then rq "[mongo$k] CPU available >= 2 cores" OK yes
+		else rq "[mongo$k] CPU available >= 2 cores" WARN "no (effective limit/cpuset below guidance)"; fi
+		if [ "$emem" -ge 4194304 ]; then rq "[mongo$k] memory available >= 4 GiB" OK yes
+		else rq "[mongo$k] memory available >= 4 GiB" WARN "no (effective limit below guidance)"; fi
+
+		if [ "$IN_CONTAINER" = y ]; then
+			if [ "$MEM_LIMITED" != y ]; then
+				chk "[mongo$k] memory figure basis" INFO "no container memory limit visible: result reflects host RAM, not a pod/container cap"
+			fi
+			if [ "$K8S" = y ]; then
+				chk "[mongo$k] requests (2 CPU / 4 GiB) and limits >= requests" INFO "requests are not reliably visible from inside the pod; verify in the pod spec"
+			fi
+		fi
+
+		# storage
+		case "${MG_FS[$k]}" in
+			"") chk "[mongo$k] own persistent volume for data" INFO "data path not visible";;
+			overlay) rq "[mongo$k] own persistent volume for data" WARN "no - container writable layer (data is lost with the pod)";;
+			tmpfs|ramfs) rq "[mongo$k] own persistent volume for data" WARN "no - memory-backed filesystem";;
+			nfs*|cifs|smb*|fuse*) rq "[mongo$k] own persistent volume for data" WARN "network/FUSE filesystem (do not share volumes between members)";;
+			*) rq "[mongo$k] own persistent volume for data" OK "yes (dedicated mount)";;
+		esac
+	done
+
+	# two mongod processes in this environment using the same data directory
+	local a b
+	for a in "${!MG_DIR[@]}"; do for b in "${!MG_DIR[@]}"; do
+		[ "$a" -lt "$b" ] && [ -n "${MG_DIR[$a]}" ] && [ "${MG_DIR[$a]}" = "${MG_DIR[$b]}" ] &&
+			rq "members sharing a data directory" WARN "[mongo$a] and [mongo$b] use the same data directory"
+	done; done
+	chk "one volume per replica-set member" INFO "sharing across pods/hosts is not visible from inside; verify in the pod spec"
+	if grep -q '^flags.*hypervisor' /proc/cpuinfo 2>/dev/null || [ "$(rd /sys/devices/system/cpu/smt/active)" = 1 ]; then
+		chk "CPU counts are logical" INFO "vCPUs/SMT threads may not equal 'real cores'; guidance assumes real cores"
+	fi
+
+	if [ "$RQ_FAIL" -eq 0 ]; then row "meets sizing guidance" "yes"
+	else chk "meets sizing guidance" WARN "no - $RQ_FAIL check(s) below guidance"; fi
+}
+
 # ---------------------------------------------------------------- main
 
 usage() {
@@ -1145,6 +1253,7 @@ report_body() {
 	s_storage
 	s_network
 	s_mongo
+	s_requirements
 	s_events
 	echo
 	echo "-- end of report --"
