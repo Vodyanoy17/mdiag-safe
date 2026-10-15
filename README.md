@@ -238,8 +238,8 @@ writable layer instead of a dedicated volume.
 | Kernel settings        | swappiness, zone reclaim, overcommit, `max_map_count`, TCP keepalive, THP, clocksource, SELinux |
 | Capacity headroom      | open files, threads, PIDs, ephemeral ports, conntrack, `somaxconn`, dirty ratios, all as used/limit |
 | Time synchronization   | sync daemon type, synchronized yes/no |
-| Block devices and filesystems | type, scheduler, read-ahead, busy % per disk; filesystem type and space used |
-| Network posture        | packet filtering present or not (no addresses) |
+| Block devices and filesystems | type, scheduler, read-ahead, busy % and read/write latency (fast / normal / slow) per disk; container disk I/O limit yes/no; filesystem type and space used |
+| Network posture        | packet filtering present or not; interface error/drop ratio; TCP retransmit ratio; TIME_WAIT / CLOSE_WAIT socket counts (no addresses) |
 | MongoDB processes      | role, version (major.minor), age, CPU and RSS against effective limits, fd and nofile/nproc limits, cgroup cap, NUMA interleave, auth / TLS / replica set / sharding flags (booleans only), listen scope (loopback / all interfaces / specific), data filesystem type, space, inodes, noatime, data volume vs container layer, data disk behind the data path |
 | Kernel log events      | OOM, I/O errors, machine checks, hung tasks, segfaults as none/few/many |
 

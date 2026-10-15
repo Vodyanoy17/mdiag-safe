@@ -330,6 +330,14 @@ s_platform() {
 			row "CPU limit (quota)" "$(corebucket "$EFF_CPU_X100")"
 		fi
 	fi
+	if [ "$IN_CONTAINER" = y ] && [ "$CGV" != none ]; then
+		local iol=no
+		case "$CGV" in
+			v2) grep -q . "$MEMDIR/io.max" 2>/dev/null && iol=yes;;
+			v1) grep -qv ' 0$' /sys/fs/cgroup/blkio/blkio.throttle.read_bps_device /sys/fs/cgroup/blkio/blkio.throttle.write_bps_device /sys/fs/cgroup/blkio/blkio.throttle.read_iops_device /sys/fs/cgroup/blkio/blkio.throttle.write_iops_device 2>/dev/null && iol=yes;;
+		esac
+		row "disk I/O limit configured" "$iol"
+	fi
 	row "distro family" "${id:-unknown} (major ${ver:-?})"
 	row "kernel (major.minor)" "$k"
 	row "architecture class" "$(uname -m | sed -E 's/^(x86_64|amd64)$/x86-64/; s/^(aarch64|arm64)$/arm64/')"
@@ -344,7 +352,8 @@ s_platform() {
 # ---------------------------------------------------------------- shared sample window
 # One before/after snapshot (CPU, cgroup, disk, vmstat) used by several sections.
 
-declare -A D0 D1 V0 V1
+declare -A D0 D1 V0 V1 L0 L1
+N0=""; N1=""
 S_CPU0=""; S_CPU1=""; S_CU0=""; S_CU1=""; S_TH0=""; S_TH1=""
 
 snap_vmstat() { # array-name
@@ -359,13 +368,27 @@ snap_disk() { # array-name
 	while read -r l; do arr[${l%% *}]="${l#* }"; done < <(awk '{print $3, $13}' /proc/diskstats 2>/dev/null)
 }
 
+# per-device "reads read_ms writes write_ms" for latency
+snap_lat() { # array-name
+	local -n arr="$1"
+	while read -r k v; do arr[$k]="$v"; done < <(awk '{print $3, $4, $7, $8, $11}' /proc/diskstats 2>/dev/null)
+}
+# network counters summed over non-loopback interfaces + TCP segments:
+# "rx_pk rx_err rx_drop tx_pk tx_err tx_drop tcp_out tcp_retrans"
+snap_net() {
+	local dev tcp
+	dev="$(awk -F'[: ]+' 'NR>2 && $2!="lo" {rp+=$4; re+=$5; rd+=$6; tp+=$12; te+=$13; td+=$14} END{print rp+0, re+0, rd+0, tp+0, te+0, td+0}' /proc/net/dev 2>/dev/null)"
+	tcp="$(awk '/^Tcp:/{ if (!h) {for(i=1;i<=NF;i++){if($i=="OutSegs")o=i; if($i=="RetransSegs")r=i}; h=1} else print $o, $r }' /proc/net/snmp 2>/dev/null)"
+	echo "$dev $tcp"
+}
+
 sample_begin() {
 	S_CPU0="$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)"
 	if [ "$IN_CONTAINER" = y ] && [ "$CGV" != none ]; then
 		cg_dirs self
 		S_CU0="$(cg_cpu_usage_usec)"; S_TH0="$(cg_throttle)"
 	fi
-	snap_disk D0; snap_vmstat V0
+	snap_disk D0; snap_vmstat V0; snap_lat L0; N0="$(snap_net)"
 }
 sample_end() {
 	S_CPU1="$(awk '/^cpu /{print $2,$3,$4,$5,$6,$7,$8,$9}' /proc/stat)"
@@ -373,7 +396,7 @@ sample_end() {
 		cg_dirs self
 		S_CU1="$(cg_cpu_usage_usec)"; S_TH1="$(cg_throttle)"
 	fi
-	snap_disk D1; snap_vmstat V1
+	snap_disk D1; snap_vmstat V1; snap_lat L1; N1="$(snap_net)"
 }
 vdelta() { echo $(( ${V1[$1]:-0} - ${V0[$1]:-0} )); }
 
@@ -670,6 +693,32 @@ disk_report() { # label sysname
 	if [ "$rac" = "far above recommended" ]; then chk "$label read-ahead" WARN "$rac"
 	else row "$label read-ahead" "$rac"; fi
 	chk_band "$label busy (sample)" "$(band "$busy")"
+	disk_latency "$label" "$n"
+}
+
+# average read/write latency over the sample, qualitative (no absolute values)
+disk_latency() { # label sysname
+	local label="$1" n="$2" a b rd wd rl wl
+	a=(${L0[$n]}); b=(${L1[$n]})
+	[ "${#a[@]}" -eq 4 ] && [ "${#b[@]}" -eq 4 ] || { row "$label latency" "n/a"; return; }
+	rd=$(( b[0] - a[0] )); wd=$(( b[2] - a[2] ))
+	_lat() { # ops ms kind -> label
+		if [ "$1" -le 0 ]; then echo "no I/O in sample"; return; fi
+		local avg=$(( $2 / $1 ))
+		if   [ "$avg" -lt 2 ];  then echo "OK:fast"
+		elif [ "$avg" -lt 10 ]; then echo "OK:normal"
+		elif [ "$avg" -lt 50 ]; then echo "WARN:slow"
+		else echo "WARN:very slow"; fi
+	}
+	for k in read write; do
+		local r
+		if [ "$k" = read ]; then r="$(_lat "$rd" $(( b[1] - a[1] )))"; else r="$(_lat "$wd" $(( b[3] - a[3] )))"; fi
+		case "$r" in
+			OK:*)   chk "$label $k latency" OK "${r#OK:}";;
+			WARN:*) chk "$label $k latency" WARN "${r#WARN:} (compared with typical SSD/NVMe behaviour)";;
+			*)      row "$label $k latency" "$r";;
+		esac
+	done
 }
 
 # the physical/stacked disk behind a major:minor (used for the data volume)
@@ -998,15 +1047,63 @@ s_network() {
 	hdr "Network posture (no addresses)"
 	if [ "$IN_CONTAINER" = y ]; then
 		row "packet filtering" "not checkable from container (CNI / host / network policy)"
-		return
+	else
+		local fw="unknown" rules
+		if have_proc firewalld; then fw="firewalld active"
+		elif have iptables; then
+			rules="$(iptables -S 2>/dev/null | grep -vc '^-P')"
+			if isnum "$rules"; then [ "$rules" -gt 0 ] && fw="iptables rules present" || fw="no iptables rules"; fi
+		fi
+		row "packet filtering" "$fw"
 	fi
-	local fw="unknown" rules
-	if have_proc firewalld; then fw="firewalld active"
-	elif have iptables; then
-		rules="$(iptables -S 2>/dev/null | grep -vc '^-P')"
-		if isnum "$rules"; then [ "$rules" -gt 0 ] && fw="iptables rules present" || fw="no iptables rules"; fi
+
+	local a=($N0) b=($N1) i ok=y
+	[ "${#a[@]}" -eq 8 ] && [ "${#b[@]}" -eq 8 ] || ok=n
+	for i in "${a[@]}" "${b[@]}"; do isnum "$i" || ok=n; done
+	if [ "$ok" = y ]; then
+		local pk=$(( b[0]+b[3] )) er=$(( b[1]+b[2]+b[4]+b[5] ))
+		local dpk=$(( b[0]+b[3]-a[0]-a[3] )) der=$(( b[1]+b[2]+b[4]+b[5]-a[1]-a[2]-a[4]-a[5] ))
+		# interface errors/drops: lifetime ratio and sample activity
+		if [ "$pk" -le 0 ]; then row "interface errors+drops (since boot)" "no traffic"
+		else
+			local r; r="$(awk -v e="$er" -v p="$pk" 'BEGIN{x=e*100/p; if(e==0)print "none"; else if(x<0.1)print "<0.1% of packets"; else if(x<1)print "0.1-1% of packets"; else print ">=1% of packets"}')"
+			case "$r" in none|"<0.1% of packets") chk "interface errors+drops (since boot)" OK "$r";;
+				*) chk "interface errors+drops (since boot)" WARN "$r";; esac
+		fi
+		if [ "$dpk" -le 0 ]; then row "interface errors+drops (sample)" "no traffic"
+		elif [ "$der" -le 0 ]; then chk "interface errors+drops (sample)" OK none
+		else chk "interface errors+drops (sample)" WARN "$(countband "$der")"; fi
+
+		# TCP retransmissions
+		local tout=${b[6]} tre=${b[7]} dout=$(( b[6]-a[6] )) dre=$(( b[7]-a[7] ))
+		if [ "$tout" -le 0 ]; then row "TCP retransmits (since boot)" "no traffic"
+		else
+			local r; r="$(awk -v e="$tre" -v p="$tout" 'BEGIN{x=e*100/p; if(e==0)print "none"; else if(x<0.1)print "<0.1% of segments"; else if(x<1)print "0.1-1% of segments"; else if(x<5)print "1-5% of segments"; else print ">=5% of segments"}')"
+			case "$r" in none|"<0.1% of segments"|"0.1-1% of segments") chk "TCP retransmits (since boot)" OK "$r";;
+				*) chk "TCP retransmits (since boot)" WARN "$r (lossy or congested network)";; esac
+		fi
+		if [ "$dout" -le 0 ]; then row "TCP retransmits (sample)" "no traffic"
+		else
+			local r; r="$(awk -v e="$dre" -v p="$dout" 'BEGIN{x=e*100/p; if(e==0)print "none"; else if(x<1)print "<1% of segments"; else if(x<5)print "1-5% of segments"; else print ">=5% of segments"}')"
+			case "$r" in none|"<1% of segments") chk "TCP retransmits (sample)" OK "$r";;
+				*) chk "TCP retransmits (sample)" WARN "$r";; esac
+		fi
+	else
+		row "interface errors+drops" "n/a"
+		row "TCP retransmits" "n/a"
 	fi
-	row "packet filtering" "$fw"
+
+	# TCP socket states in this network namespace
+	if [ -r /proc/net/tcp ]; then
+		local tw cw
+		read -r tw cw < <(cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | awk '$4=="06"{t++} $4=="08"{c++} END{print t+0, c+0}')
+		if isnum "$tw" && isnum "$cw"; then
+			if [ "$tw" -gt 1000 ]; then chk "TCP sockets in TIME_WAIT" WARN "many (churn of short connections)"
+			else chk "TCP sockets in TIME_WAIT" OK "$(countband "$tw")"; fi
+			if [ "$cw" -gt 0 ]; then chk "TCP sockets in CLOSE_WAIT" WARN "$(countband "$cw") (peer closed, app has not)"
+			else chk "TCP sockets in CLOSE_WAIT" OK none; fi
+		fi
+	fi
 }
 
 # ---------------------------------------------------------------- main
