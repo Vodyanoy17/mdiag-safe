@@ -9,9 +9,10 @@ report must be shared without exposing the environment:
 - **No names.** No hostnames or pod names, usernames, IPs, MACs, paths, device
   names, mount points, interface names, config values, timestamps or ticket
   references. Things are labelled generically: `disk1`, `fs1`, `mongo1`.
-- **No absolute values.** No sizes, core or RAM counts, byte numbers, ports or
-  PIDs. Only percentage bands (`<10%`, `10-25%`, `25-50%`, `50-75%`, `75-90%`,
-  `90-100%`, `>100%`), coarse time bands, `none/few/many` counts, booleans, and
+- **No absolute values.** No exact sizes, core or RAM counts, byte numbers,
+  ports or PIDs. Resource limits appear only as coarse whole-core and GiB
+  buckets (`<=1 core`, `2-4 GiB`, ...). Everything else is a percentage band (`<10%`, `10-25%`, `25-50%`,
+  `50-75%`, `75-90%`, `90-100%`, `>100%`), coarse time bands, `none/few/many` counts, booleans, and
   `[OK]` / `[WARN]` / `[INFO]` checks against generic MongoDB recommendations.
 - **Read-only and offline.** No self-update, no network calls, nothing written
   to disk. The report goes to stdout.
@@ -69,7 +70,7 @@ If `mongod` is not visible, the report says so and suggests where to run it.
 
 Real output from a Docker container (memory limit and CPU quota set) running a
 stand-in `mongod` process. Everything you see is everything the report
-contains. There are no names, addresses, paths or absolute sizes.
+contains. There are no names, addresses, paths or exact sizes.
 
 ```text
 MongoDB host health report (anonymized, relative values only)
@@ -96,6 +97,7 @@ legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
   CPU limit configured (quota)             yes
   memory limit                             <=0.5 GiB
   CPU limit (quota)                        <=1 core
+  disk I/O limit configured                no
   distro family                            rhel (major 8)
   kernel (major.minor)                     7.0
   architecture class                       arm64
@@ -170,10 +172,14 @@ legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
   disk1 scheduler                          mq-deadline
   disk1 read-ahead                         [WARN] far above recommended
   disk1 busy (sample)                      [OK] <10%
+  disk1 read latency                       no I/O in sample
+  disk1 write latency                      no I/O in sample
   disk2 type                               rotational flag set
   disk2 scheduler                          mq-deadline
   disk2 read-ahead                         [WARN] far above recommended
   disk2 busy (sample)                      [OK] <10%
+  disk2 read latency                       no I/O in sample
+  disk2 write latency                      no I/O in sample
 
 == Filesystems visible to this environment (anonymized) ==
   fs1 type                                 overlay
@@ -184,6 +190,12 @@ legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
 
 == Network posture (no addresses) ==
   packet filtering                         not checkable from container (CNI / host / network policy)
+  interface errors+drops (since boot)      [OK] none
+  interface errors+drops (sample)          [OK] none
+  TCP retransmits (since boot)             [OK] <0.1% of segments
+  TCP retransmits (sample)                 [OK] none
+  TCP sockets in TIME_WAIT                 [OK] none
+  TCP sockets in CLOSE_WAIT                [OK] none
 
 == MongoDB processes ==
 
@@ -196,7 +208,7 @@ legend: [OK] meets generic recommendation, [WARN] deviates, [INFO] informational
   [mongo1] fd used / limit                 [OK] <10%
   [mongo1] nofile limit                    [OK] meets recommendation
   [mongo1] nproc limit                     [OK] meets recommendation
-  [mongo1] cgroup memory cap / host RAM    <10%
+  [mongo1] cgroup memory cap               <=0.5 GiB
   [mongo1] authorization enabled           [OK] yes
   [mongo1] TLS/SSL enabled                 [WARN] no
   [mongo1] replica set member              no

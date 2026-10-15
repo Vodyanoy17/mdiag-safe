@@ -10,8 +10,9 @@
 #   1. No names: no hostnames/pod names, usernames, IPs, MACs, paths, device
 #      names, mount points, interface names, config values, timestamps or
 #      ticket refs. Things are labelled generically (disk1, fs1, mongo1, ...).
-#   2. No absolute values: no sizes, core/RAM counts, byte numbers, ports,
-#      PIDs or clock times. Only percentages in coarse bands, enums, booleans
+#   2. No absolute values: no exact sizes, core/RAM counts, byte numbers, ports,
+#      PIDs or clock times. Limits appear only as coarse core/GiB buckets;
+#      otherwise percentages in coarse bands, enums, booleans
 #      and pass/fail checks against generic MongoDB recommendations.
 #   3. Read-only and offline: no self-update, no network calls, nothing is
 #      written to disk. The report goes to stdout.
