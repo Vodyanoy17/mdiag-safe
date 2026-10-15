@@ -1193,7 +1193,7 @@ s_requirements() {
 		# storage
 		case "${MG_FS[$k]}" in
 			"") chk "[mongo$k] own persistent volume for data" INFO "data path not visible";;
-			overlay) rq "[mongo$k] own persistent volume for data" WARN "no - container writable layer (data is lost with the pod)";;
+			overlay) rq "[mongo$k] own persistent volume for data" WARN "no - container writable layer (data is lost when the $([ "$K8S" = y ] && echo pod || echo container) is removed)";;
 			tmpfs|ramfs) rq "[mongo$k] own persistent volume for data" WARN "no - memory-backed filesystem";;
 			nfs*|cifs|smb*|fuse*) rq "[mongo$k] own persistent volume for data" WARN "network/FUSE filesystem (do not share volumes between members)";;
 			*) rq "[mongo$k] own persistent volume for data" OK "yes (dedicated mount)";;
